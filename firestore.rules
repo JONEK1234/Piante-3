@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // Global Helper Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isAllowedWriter() {
+      return isSignedIn() && request.auth.token.email != null;
+    }
+    
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
+    function isOwner(plantData) {
+      return isSignedIn() && plantData.ownerId == request.auth.uid;
+    }
+    
+    // 2. Validation Blueprints
+    function isValidPlant(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && (data.nickname == null || (data.nickname is string && data.nickname.size() <= 100))
+        && data.startDate is string && data.startDate.size() <= 10
+        && (data.description == null || (data.description is string && data.description.size() <= 1000))
+        && data.imageUrl is string && data.imageUrl.size() <= 500000
+        && data.ownerId is string && data.ownerId == request.auth.uid
+        && data.ownerName is string && data.ownerName.size() <= 150;
+    }
+    
+    function isValidProgressLog(data) {
+      return data.date is string && data.date.size() <= 30
+        && data.imageUrl is string && data.imageUrl.size() <= 500000
+        && data.notes is string && data.notes.size() <= 1000
+        && data.status is string && data.status.size() <= 50;
+    }
+    
+    // 3. Collection Rules
+    match /plants/{plantId} {
+      allow read: if true;
+      
+      allow create: if isAllowedWriter() 
+        && isValidId(plantId) 
+        && isValidPlant(incoming())
+        && incoming().createdAt == request.time;
+        
+      allow update: if isAllowedWriter()
+        && isOwner(existing())
+        && isValidPlant(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'nickname', 'startDate', 'description', 'imageUrl', 'updatedAt']);
+        
+      allow delete: if isAllowedWriter() && isOwner(existing());
+      
+      match /logs/{logId} {
+        allow read: if true;
+        
+        allow create: if isAllowedWriter()
+          && isValidId(logId)
+          && get(/databases/$(database)/documents/plants/$(plantId)).data.ownerId == request.auth.uid;
+          
+        allow update, delete: if isAllowedWriter()
+          && get(/databases/$(database)/documents/plants/$(plantId)).data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}
